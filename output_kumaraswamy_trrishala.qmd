@@ -1,0 +1,225 @@
+---
+title: "Trrishala Kumaraswamy_output"
+date: November 12, 2023
+format: html
+editor: source
+embed-resources: TRUE
+---
+
+```{r}
+library(tidyverse)
+library(Hmisc)
+
+```
+
+```{r}
+tag      <- "202311081903"
+base_url <- "https://github.com/randrescastaneda/pub_data/raw/"
+data_url <- paste0(base_url, tag, "/data/Rtest1/")
+
+
+wdi <-
+  readr::read_rds(paste0(data_url, "wdi_in1.Rds"))
+```
+
+```{r}
+# Part 1
+
+wdi %>%
+  group_by(region, date) %>%
+  summarise(
+    N = n(),
+    Mean = weighted.mean(gdp, pop, na.rm = TRUE),
+    SD = sd(gdp, na.rm = TRUE),
+    Min = min(gdp),
+    Max = max(gdp)) %>% 
+  as_tibble()
+
+print(wdi)
+```
+
+```{r}
+
+# Part 2
+
+weighted_summary <- function(x, w) {
+  mean_val <- weighted.mean(x, w, na.rm = TRUE)
+  sd_val <- sd(x, na.rm = TRUE)
+  min_val <- min(x, na.rm = TRUE)
+  max_val <- max(x, na.rm = TRUE)
+  median_val <- median(x, na.rm = TRUE)
+  
+  return(c(mean = mean_val, 
+           sd = sd_val, 
+           min = min_val, 
+           max = max_val, 
+           median = median_val))}
+
+# Variables to summarize
+variables_to_summarize <- c("lifeex", "gdp", "pov_intl")
+
+# Aggregate stats
+aggregate_stats <- 
+  wdi %>%
+  group_by(region, date) %>%
+  summarise(
+    total_population = sum(pop, na.rm = TRUE),
+    across(all_of(variables_to_summarize), 
+           ~ weighted_summary(., pop), 
+           .names = "{col}_{fn}")) %>% 
+  as_tibble()
+
+
+print(aggregate_stats)
+```
+
+```{r}
+
+# Part 3
+
+weighted_summary <- function(x, w) {
+  mean_val <- weighted.mean(x, w, na.rm = TRUE)
+  sd_val <- sd(x, na.rm = TRUE)
+  return(c(mean = mean_val, sd = sd_val))
+}
+
+# Variables to analyze
+variables_to_analyze <- c("lifeex", "gdp", "gini")
+
+# Find outliers
+outliers <- wdi %>%
+  group_by(region, date) %>%
+  mutate(across(all_of(variables_to_analyze), 
+                ~ {
+                  mean_sd <- weighted_summary(., pop)
+                  upper_bound = mean_sd["mean"] + 2.5 * mean_sd["sd"]
+                  lower_bound = mean_sd["mean"] - 2.5 * mean_sd["sd"]
+                  is_outlier = (. > upper_bound) | (. < lower_bound)
+                  return(is_outlier)
+                })) %>% 
+  as_tibble()
+print(outliers)
+
+```
+
+```{r}
+# loading the data 
+
+l_svy <-
+    readr::read_rds(paste0(data_url, "svy_sim_in1.Rds"))
+```
+
+```{r}
+
+# Part 4
+
+# Function to calculate FGT indices
+calculate_fgt_indices <- function(incomes, weights, poverty_lines) {
+  total_population <- sum(weights)
+  
+  poverty_measures <- sapply(poverty_lines, function(poverty_line) {
+    below_poverty_line <- sum(ifelse(incomes < poverty_line, weights, 0))
+    
+    headcount_ratio <- below_poverty_line / total_population
+    poverty_gap_ratio <- sum(ifelse(incomes < poverty_line, (poverty_line - incomes) * weights, 0)) / (poverty_line * total_population)
+    poverty_severity_ratio <- sum(ifelse(incomes < poverty_line, ((poverty_line - incomes) / poverty_line)^2 * weights, 0)) / total_population
+    
+    return(c(headcount = headcount_ratio, gap = poverty_gap_ratio, severity = poverty_severity_ratio))
+  })
+  
+  return(poverty_measures)
+}
+
+# Poverty lines in 2017 PPP prices
+poverty_lines <- c(2.15, 3.65, 6.85)
+
+# Calculate poverty measures for each year
+poverty_results <- l_svy %>%
+  lapply(function(year_data) {
+    calculate_fgt_indices(year_data$income, year_data$weight, poverty_lines)
+  })
+
+# Convert the list to a data frame
+poverty_data <- bind_rows(Map(function(year, results) {
+  data.frame(
+    year = rep(year, length(poverty_lines)),
+    poverty_line = rep(poverty_lines, each = length(year)),
+    results
+  )
+}, names(poverty_results), poverty_results)) %>% 
+  as_tibble()
+
+# Print the resulting data frame
+print(poverty_data)
+
+
+```
+
+```{r}
+# Part 5
+
+calculate_lorenz_curve <- function(incomes, weights) {
+  # Combine incomes and weights into a data frame
+  data <- data.frame(income = incomes, weight = weights)
+  
+  # Order the data by income
+  data <- data[order(data$income), ]
+  
+  # Calculate cumulative population and cumulative income shares
+  data <- mutate(data,
+                 cum_population = cumsum(weight) / sum(weight),
+                 cum_income = cumsum(weighted.mean(income, w = weight)) / sum(weight))
+  
+  return(data[, c("cum_population", "cum_income")])
+}
+
+# Example usage:
+# Assuming 'incomes' is a vector of incomes and 'weights' is a vector of population weights
+lorenz_curve_data <- 
+  l_svy %>%
+  map(~.x %>%
+  mutate(calculate_lorenz_curve(income, weight))) 
+print(lorenz_curve_data)
+```
+
+```{r}
+# Part 6
+
+calculate_gini <- function(incomes, weights) {
+  # Combine incomes and weights into a data frame
+  data <- data.frame(income = incomes, weight = weights)
+  
+  # Order the data by income
+  data <- data[order(data$income), ]
+  
+  # Calculate cumulative population and cumulative income shares
+  data$cum_population <- cumsum(data$weight) / sum(data$weight)
+  data$cum_income <- cumsum(data$income * data$weight) / sum(data$weight)
+  
+  # Calculate the area under the Lorenz curve
+  area_under_lorenz <- sum(diff(data$cum_population) * (data$cum_income[-1] + data$cum_income[-length(data$cum_income)]) / 2)
+  
+  # Calculate the Gini coefficient
+  gini_coefficient <- 1 - 2 * area_under_lorenz
+  
+  return(gini_coefficient)
+}
+
+# Estimate Gini for every single year
+gini_by_year <- l_svy %>%
+  lapply(function(year_data) {
+    calculate_gini(year_data$income, year_data$weight)
+  })
+
+# Convert the list to a data frame
+gini_data <- data.frame(
+  year = seq_along(gini_by_year),
+  gini = unlist(gini_by_year)
+) %>% 
+  as_tibble()
+
+# Print the resulting data frame
+print(gini_data)
+
+
+```
